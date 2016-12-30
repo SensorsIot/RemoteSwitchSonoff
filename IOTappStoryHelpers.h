@@ -40,6 +40,7 @@ void configESP() {
   for (int i = 0; i < 5; i++) DEBUG_PRINTLN("");
   DEBUG_PRINTLN("Start " FIRMWARE);
   DEBUG_PRINTLN("------------- Configuration Mode -------------------");
+
   for (int i = 0; i < 3; i++) DEBUG_PRINTLN("");
 
   pinMode(GPIO0, INPUT_PULLUP);  // GPIO0 as input for Config mode selection
@@ -54,6 +55,11 @@ void configESP() {
 
 
   readFullConfiguration();  // configuration in EEPROM
+  connectNetwork();
+
+  UDPDEBUG_START();
+  UDPDEBUG_PRINTTXT("------------- Configuration Mode -------------------");
+  UDPDEBUG_SEND();
 
   initWiFiManager();
 

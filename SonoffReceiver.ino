@@ -41,7 +41,6 @@
 
 #define SERIALDEBUG         // Serial is used to present debugging messages 
 #define REMOTEDEBUGGING     // telnet is used to present
-//#define BOOTSTATISTICS    // send bootstatistics to Sparkfun
 
 #define LEDS_INVERSE   // LEDS on = GND
 
@@ -52,7 +51,6 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266mDNS.h>
-#include "RemoteDebug.h"        //https://github.com/JoaoLopesF/RemoteDebug
 #include <WiFiManager.h>        //https://github.com/kentaylor/WiFiManager
 #include <WiFiUDP.h>
 #include <Ticker.h>
@@ -93,11 +91,6 @@ WiFiServer server(80);
 // UDP variables
 WiFiUDP UDP;
 Ticker blink;
-
-// remoteDebug
-#ifdef REMOTEDEBUGGING
-RemoteDebug Debug;
-#endif
 
 
 //--------- ENUMS AND STRUCTURES  -------------------
@@ -149,7 +142,11 @@ enum wifiCommandDef {
 String boardName, IOTappStory1, IOTappStoryPHP1, IOTappStory2, IOTappStoryPHP2; // add NEW CONSTANTS according boardname example
 int delayTime;   // time till off in seconds; 0 = always on
 
-long delayCount = -1;
+#ifdef REMOTEDEBUGGING
+char debugBuffer[255];
+#endif
+
+int delayCount = -1;
 
 char boardMode = 'N';  // Normal operation or Configuration mode?
 
@@ -184,8 +181,7 @@ bool handleWiFi(void);
 
 //---------- OTHER .H FILES ----------
 #include <ESP_Helpers.h>
-#include "WiFiManager_Helpers.h"
-#include <SparkfunReport.h>
+#include "IOTappStoryHelpers.h"
 
 
 //-------------------------- SETUP -----------------------------------------
@@ -236,68 +232,37 @@ void setup() {
 
 
   DEBUG_PRINTLN("------------- Normal Mode -------------------");
-  UDPDEBUG_PRINTLN("------------- Normal Mode -------------------");
+
+  readFullConfiguration();
 
   // --------- START WIFI --------------------------
-  readFullConfiguration();
-  WiFi.mode(WIFI_STA);
-  WiFi.begin();
 
-  if (!isNetworkConnected()) {
-    DEBUG_PRINTLN("");
-    DEBUG_PRINTLN("No Connection. Try to connect with saved PW");
-    WiFi.begin(config.ssid, config.password);  // if password forgotten by firmwware try again with stored PW
-    if (!isNetworkConnected()) espRestart('C', "Going into Configuration Mode"); // still no success
-  }
-  else {
-    udpConnected = connectUDP();
-    if (udpConnected)
-      Serial.println("UPD Connected");
-    else
-      Serial.println("UPD FAILED!");
+  connectNetwork();
+  
+  UDPDEBUG_START();
+  UDPDEBUG_PRINTTXT("------------- Normal Mode -------------------");
+  UDPDEBUG_SEND();
 
-    DEBUG_PRINTLN("");
-    DEBUG_PRINTLN("WiFi connected");
-    getMACaddress();
-    printMacAddress();
-    DEBUG_PRINT("IP Address: ");
-    DEBUG_PRINTLN(WiFi.localIP());
-
-#ifdef REMOTEDEBUGGING
-    remoteDebugSetup();
-    UDPDEBUG_PRINTLN(config.boardName);
-#endif
+  // add a DNS service
+  MDNS.addService(SERVICENAME, "tcp", 8080);
 
   //  IOTappStory();
 
-#ifdef BOOTSTATISTICS
-    sendSparkfun();   // send boot statistics to sparkfun
-#endif
+
+  // ----------- SPECIFIC SETUP CODE ----------------------------
 
 
-    // ----------- SPECIFIC SETUP CODE ----------------------------
 
-    // Register host name in WiFi and mDNS
-    String hostNameWifi = config.boardName;   // boardName is device name
-    hostNameWifi.concat(".local");
-    WiFi.hostname(hostNameWifi);
-    if (MDNS.begin(config.boardName)) {
-      DEBUG_PRINT("* MDNS responder started. http://");
-      DEBUG_PRINTLN(hostNameWifi);
-      MDNS.addService("SERVICENAME", "tcp", 8080);
-    } else espRestart('C', "No Credentials");
-
-    // ----------- END SPECIFIC SETUP CODE ----------------------------
-
-  }  // End WiFi necessary
+  // ----------- END SPECIFIC SETUP CODE ----------------------------
 
   LEDswitch(None);
   pinMode(GPIO0, INPUT_PULLUP);  // GPIO0 as input for Config mode selection
 
-  DEBUG_PRINTLN("setup done");
+  DEBUG_PRINTLN("Setup done");
+  UDPDEBUG_START();
+  UDPDEBUG_PRINTTXT("Setup done");
+  UDPDEBUG_SEND();
 }
-
-
 
 
 
@@ -305,37 +270,36 @@ void setup() {
 
 //--------------- LOOP ----------------------------------
 void loop() {
-  //-------- Standard Block ---------------
-  if (buttonChanged && buttonTime > 4000) espRestart('C', "Going into Configuration Mode");  // long button press > 4sec
-  if (buttonChanged && buttonTime > 500 && buttonTime < 4000) IOTappStory(); // long button press > 1sec
-  buttonChanged = false;
-#ifdef REMOTEDEBUGGING
-  Debug.handle();
+  //-------- IOTappStory Block ---------------
   yield();
-  //-------- End Standard Block ---------------
+  handleFlashButton();   // this routine handles the reaction of the Flash button. If short press: update of skethc, long press: Configuration
 
-  // ------- Debug Message --------
-  if (Debug.ative(Debug.INFO) && (millis() - infoEntry) > 5000) {
-    Debug.printf("Firmware: %s", FIRMWARE);
-    Debug.printf(" RelayState: %d ", relayState);
-    Debug.printf(" wifiCommand: %d ", wifiCommand);
-    Debug.printf(" relayState: %d", relayState);
-    Debug.print(" ");
-    Debug.printf(" Delay: %d", delayCount);
-    Debug.println(" sec:");
-    Debug.print("Heap ");
-    Debug.println(ESP.getFreeHeap());
-    infoEntry = millis();
-  }
-#endif
-  // ------------------------------------
+  // Normal blind (1 sec): Connecting to network
+  // fast blink: Configuration mode. Please connect to ESP network
+  // Slow Blink: IOTappStore Update in progress
 
-  server.begin();
-  handleWiFi();
+  //-------- End IOTappStory Block ---------------
 
-  if (millis() - entryDelay > 1000) { // every
+
+  //-------- Your Sketch ---------------
+
+  handleWiFi();  // main function. Handles all WiFi traffic and switches the relay
+
+  //-------- End Your Sketch ---------------
+
+  if (millis() - entryDelay > 1000) { // Non-Blocking second counter
     entryDelay = millis();
     if (delayCount-- <= 0 ) delayCount = 0;
+
+    // Debug Message
+    UDPDEBUG_START();
+    UDPDEBUG_PRINTTXT("Firmware: "FIRMWARE);
+    UDPDEBUG_PRINT(" RelayState: ", relayState);
+    UDPDEBUG_PRINT(" WifiCommand: ", wifiCommand);
+    UDPDEBUG_PRINT(" relayState: ", relayState);
+    UDPDEBUG_PRINT(" Delay: ", delayCount);
+    //   UDPDEBUG_PRINT("Heap ", ESP.getFreeHeap());
+    UDPDEBUG_SEND();
   }
 }
 //------------------------- END LOOP --------------------------------------------
@@ -369,6 +333,7 @@ void handleStatus() {
 }
 
 bool handleWiFi() {
+  server.begin();
   WiFiClient client = server.available();
   if (!client) return false;
   else {
@@ -385,18 +350,24 @@ bool handleWiFi() {
       // Match the request
       if (request.indexOf("/SWITCH=ON") != -1) {
         wifiCommand = COMMAND_ON;
+        UDPDEBUG_START();
         DEBUG_PRINTLN("ON request received");
-        UDPDEBUG_PRINTLN("ON request received ");
+        UDPDEBUG_PRINTTXT("ON request received ");
+        UDPDEBUG_SEND();
       }
       if (request.indexOf("/SWITCH=OFF") != -1) {
         wifiCommand = COMMAND_OFF;
+        UDPDEBUG_START();
         DEBUG_PRINTLN("OFF request received");
-        UDPDEBUG_PRINTLN("OFF request received ");
+        UDPDEBUG_PRINTTXT("OFF request received ");
+        UDPDEBUG_SEND();
       }
       if (request.indexOf("/STATUS") != -1) {
         wifiCommand = COMMAND_STATUS;
+        UDPDEBUG_START();
         DEBUG_PRINTLN("Status request received");
-        UDPDEBUG_PRINTLN("STATUS request received ");
+        UDPDEBUG_PRINTTXT("STATUS request received ");
+        UDPDEBUG_SEND();
       }
       handleStatus();  // define next status
       // Return the response
@@ -430,14 +401,18 @@ bool handleWiFi() {
 
 void switchRelay(bool state) {
   if (state) {
-    DEBUG_PRINT("Switch On ");
-    if (Debug.ative(Debug.INFO)) UDPDEBUG_PRINTLN("Switch On ");
+    DEBUG_PRINTLN("Switch On ");
+    UDPDEBUG_START();
+    UDPDEBUG_PRINTTXT("Switch On ");
+    UDPDEBUG_SEND();
     LEDswitch(Green);
     digitalWrite(RELAYPIN, ON);
     relayState = ON;
   } else {
     DEBUG_PRINT("Switch Off ");
-    if (Debug.ative(Debug.INFO)) UDPDEBUG_PRINTLN("Switch Off ");
+    UDPDEBUG_START();
+    UDPDEBUG_PRINTTXT("Switch Off ");
+    UDPDEBUG_SEND();
     LEDswitch(None);
     digitalWrite(RELAYPIN, OFF);
     relayState = OFF;
