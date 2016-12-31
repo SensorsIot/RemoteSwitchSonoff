@@ -31,7 +31,15 @@ extern "C" {
 
 
 
-//--------------- START ----------------------------------
+//--------------- FUNCTIONS ----------------------------------
+
+// this function is called by IOTappstory() before return. Here, you put a safe startup configuration
+void initialize(){
+
+  wifiCommand = COMMAND_OFF;
+}
+
+
 void configESP() {
   Serial.begin(115200);
 #ifdef LEDgreen
@@ -142,3 +150,4 @@ void loopWiFiManager() {
   espRestart('N', "Configuration finished"); //Normal Operation
 
 }
+

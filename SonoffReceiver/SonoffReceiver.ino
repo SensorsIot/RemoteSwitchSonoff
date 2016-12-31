@@ -36,7 +36,7 @@
 
 */
 
-#define VERSION "V2.0"
+#define VERSION "V2.1"
 #define FIRMWARE "SonoffReceiver " VERSION
 
 #define SERIALDEBUG         // Serial is used to present debugging messages 
@@ -109,9 +109,9 @@ typedef struct {
 } strConfig;
 
 strConfig config = {
-  mySSID,
-  myPASSWORD,
-  "SenderINIT",
+  "",
+  "",
+  "INIT",
   "192.168.0.200",
   "/IOTappStory/IOTappStoryv20.php",
   "iotappstory.org",
@@ -178,6 +178,7 @@ bool readRTCmem(void);
 void printRTCmem(void);
 void switchRelay(bool);
 bool handleWiFi(void);
+void initialize(void);
 
 //---------- OTHER .H FILES ----------
 #include <ESP_Helpers.h>
@@ -246,7 +247,7 @@ void setup() {
   // add a DNS service
   MDNS.addService(SERVICENAME, "tcp", 8080);
 
-  //  IOTappStory();
+  IOTappStory();
 
 
   // ----------- SPECIFIC SETUP CODE ----------------------------
@@ -293,7 +294,9 @@ void loop() {
 
     // Debug Message
     UDPDEBUG_START();
-    UDPDEBUG_PRINTTXT("Firmware: "FIRMWARE);
+    UDPDEBUG_PRINTTXT("Board: ");
+    UDPDEBUG_PRINTTXT(config.boardName);
+    UDPDEBUG_PRINTTXT(" Firmware: "FIRMWARE);
     UDPDEBUG_PRINT(" RelayState: ", relayState);
     UDPDEBUG_PRINT(" WifiCommand: ", wifiCommand);
     UDPDEBUG_PRINT(" relayState: ", relayState);
