@@ -1,10 +1,8 @@
-/* This sketch connects to the iopappstore and loads the assigned firmware down. The assignment is done on the server based on the MAC address of the board
+/* This sketch monitors a PIR sensor and transmitts an "ON" or "OFF" signal to a receiving device. Together with a
+   Sonoff wireless switch, it can be used as a wireless motion detector. At startup, it connects to IOTappStory.com to
+   check for updates.
 
-    On the server, you need PHP script "IOTappStory.php" and the bin files are in the .\bin folder
-
-    This work is based on the ESPhttpUpdate examples
-
-    To add new constants in WiFiManager search for "NEW CONSTANTS" and insert them according the "boardName" example
+   To add new constants in WiFiManager search for "NEW CONSTANTS" and insert them according the "boardName" example
 
   Copyright (c) [2016] [Andreas Spiess]
 
@@ -25,7 +23,6 @@
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
-
 */
 
 /*
@@ -38,12 +35,12 @@
 
 */
 
-#define SKETCH "SonoffReceiver "
-#define VERSION "V1.3"
+#define SKETCH "SonoffSender "
+#define VERSION "V1.1"
 #define FIRMWARE SKETCH VERSION
 
-#define SERIALDEBUG         // Serial is used to present debugging messages 
-#define REMOTEDEBUGGING     // telnet is used to present
+#define SERIALDEBUG       // Serial is used to present debugging messages 
+#define REMOTEDEBUGGING       // telnet is used to present
 
 #define LEDS_INVERSE   // LEDS on = GND
 
@@ -64,33 +61,32 @@ extern "C" {
 #include "user_interface.h" // this is for the RTC memory read/write functions
 }
 
+
 //--------  Sketch Specific -------
-
-#include <ESP8266WebServer.h>
-//#include <ESP8266HTTPClient.h>
-
+// #include <ESP8266WebServer.h>
+// #include <ESP8266HTTPClient.h>
 
 
 // -------- PIN DEFINITIONS ------------------
 #ifdef ARDUINO_ESP8266_ESP01           // Generic ESP's 
 #define MODEBUTTON 0
 #define LEDgreen 13
-//#define LEDred 12
+// #define LEDred 12
 #else
 #define MODEBUTTON D3
 #define LEDgreen D7
-//#define LEDred D6
+// #define LEDred D6
 #endif
 
 // --- Sketch Specific -----
 #ifdef ARDUINO_ESP8266_ESP01           // Generic ESP's 
-#define RELAYPIN 12
+#define PIRpin 14
 #else
-#define RELAYPIN D6
+#define PIRpin D5
 #endif
 
 
-//---------- DEFINES for SKETCH ----------
+//---------- DEFINITIONS for SKETCH ----------
 #define STRUCT_CHAR_ARRAY_SIZE 50  // length of config variables
 #define MAX_WIFI_RETRIES 50
 #define RTCMEMBEGIN 68
@@ -98,7 +94,7 @@ extern "C" {
 
 // --- Sketch Specific -----
 #define SERVICENAME "SONOFF"  // name of the MDNS service used in this group of ESPs
-
+#define MAXDEVICES 5
 
 //-------- SERVICES --------------
 Ticker blink;
@@ -108,9 +104,13 @@ WiFiUDP UDP;
 #endif
 
 // --- Sketch Specific -----
-WiFiServer server(80);
+HTTPClient http;
+
+//WiFiClient client;
+
 
 //--------- ENUMS AND STRUCTURES  -------------------
+
 
 typedef struct {
   char ssid[STRUCT_CHAR_ARRAY_SIZE];
@@ -120,22 +120,24 @@ typedef struct {
   char IOTappStoryPHP1[STRUCT_CHAR_ARRAY_SIZE];
   char IOTappStory2[STRUCT_CHAR_ARRAY_SIZE];
   char IOTappStoryPHP2[STRUCT_CHAR_ARRAY_SIZE];
-  char udpPort[10];
+  char switchName1[STRUCT_CHAR_ARRAY_SIZE];
+  char switchName2[STRUCT_CHAR_ARRAY_SIZE];
+  char udpPort[5];
   // insert NEW CONSTANTS according boardname example HERE!
-  char delayTime[10];
   char magicBytes[4];
 } strConfig;
 
 strConfig config = {
-  "",
-  "",
-  "SONOFF_RECEIVER_INIT",
-  "192.168.0.200",
-  "/IOTappStory/IOTappStoryv20.php",
+  mySSID,
+  myPASSWORD,
+  "SenderINIT",
   "iotappstory.org",
   "/ota/esp8266-v1.php",
-  "8004",
-  "420",
+  "iotappstory.org",
+  "/ota/esp8266-v1.php",
+  "",
+  "",
+  "8005",
   "CFG"  // Magic Bytes
 };
 
@@ -146,16 +148,11 @@ typedef struct {
 rtcMemDef rtcMem;
 
 // --- Sketch Specific -----
-enum relayStatusDef {
-  RELAY_OFF,
-  RELAY_ON
-} relayStatus;
-
-enum wifiCommandDef {
-  COMMAND_OFF,
-  COMMAND_ON,
-  COMMAND_STATUS
-} wifiCommand = COMMAND_OFF;
+enum statusDef {
+  POWER_OFF,
+  POWER_ON,
+  Renew
+} loopStatus;
 
 //---------- VARIABLES ----------
 
@@ -172,16 +169,19 @@ char boardMode = 'N';  // Normal operation or Configuration mode?
 
 #ifdef REMOTEDEBUGGING
 // UDP variables
-char sendBuffer[255];
 IPAddress broadcastIp(255, 255, 255, 255);
 #endif
+
 
 // --- Sketch Specific -----
 // String xx; // add NEW CONSTANTS for WiFiManager according the variable "boardname"
 
-int timeToOff = -1;   // time for Relay to switch off without ON command
-unsigned long timeToOffEntry;
-
+bool PIRstatus;
+IPAddress sonoffIP[10];
+String deviceName[30];
+unsigned long dnsRefreshEntry = 0;
+unsigned long renewEntry;
+int discoverCount = 0;  // # times DNS discover found no results
 
 
 
@@ -192,8 +192,10 @@ void readFullConfiguration(void);
 bool readRTCmem(void);
 void printRTCmem(void);
 void initialize(void);
-void switchRelay(bool);
-bool handleWiFi(void);
+void showLoopState(statusDef);
+void discovermDNSServices(void);
+bool switchAllSonoffs(bool);
+bool switchSonoff(bool, String);
 
 
 //---------- OTHER .H FILES ----------
@@ -204,7 +206,6 @@ bool handleWiFi(void);
 
 
 //-------------------------- SETUP -----------------------------------------
-
 void setup() {
   Serial.begin(115200);
   for (int i = 0; i < 5; i++) DEBUG_PRINTLN("");
@@ -217,7 +218,6 @@ void setup() {
 
   // ----------- PINS ----------------
   pinMode(MODEBUTTON, INPUT_PULLUP);  // MODEBUTTON as input for Config mode selection
-
 #ifdef LEDgreen
   pinMode(LEDgreen, OUTPUT);
   digitalWrite(LEDgreen, LEDOFF);
@@ -228,13 +228,12 @@ void setup() {
 #endif
 
   // --- Sketch Specific -----
-  pinMode(RELAYPIN, OUTPUT);
+  pinMode(PIRpin, INPUT_PULLUP);
 
 
   // ------------- INTERRUPTS ----------------------------
   attachInterrupt(MODEBUTTON, ISRbuttonStateChanged, CHANGE);
   blink.detach();
-
 
   //------------- LED and DISPLAYS ------------------------
   LEDswitch(GreenBlink);
@@ -248,10 +247,13 @@ void setup() {
   printRTCmem();
 
 
+
   //---------- SELECT BOARD MODE -----------------------------
 
   system_rtc_mem_read(RTCMEMBEGIN + 100, &boardMode, 1);   // Read the "boardMode" flag RTC memory to decide, if to go to config
   if (boardMode == 'C') configESP();
+
+  DEBUG_PRINTLN("------------- Normal Mode -------------------");
 
   readFullConfiguration();
 
@@ -259,20 +261,16 @@ void setup() {
 
   connectNetwork('N');
 
-  DEBUG_PRINTLN("------------- Normal Mode -------------------");
   UDPDEBUG_START();
   UDPDEBUG_PRINTTXT("------------- Normal Mode -------------------");
   UDPDEBUG_SEND();
 
   IOTappStory();
 
-
-
   // ----------- SPECIFIC SETUP CODE ----------------------------
-
-  // add a DNS service
-  MDNS.addService(SERVICENAME, "tcp", 8080);
-
+  discoverMDNS();
+  switchAllSonoffs(false);
+  loopStatus = POWER_OFF;
   // ----------- END SPECIFIC SETUP CODE ----------------------------
 
   LEDswitch(None);
@@ -285,9 +283,6 @@ void setup() {
 }
 
 
-
-
-
 //--------------- LOOP ----------------------------------
 void loop() {
   //-------- IOTappStory Block ---------------
@@ -298,7 +293,8 @@ void loop() {
   // fast blink: Configuration mode. Please connect to ESP network
   // Slow Blink: IOTappStore Update in progress
 
-  if (millis() - debugEntry > 2000) { // Non-Blocking second counter
+  // ------- Debug Message --------
+  if ((millis() - debugEntry) > 1000) {
     debugEntry = millis();
     sendDebugMessage();
   }
@@ -306,30 +302,25 @@ void loop() {
 
   //-------- Your Sketch ---------------
 
-  if (millis() - timeToOffEntry > 1000) { // Non-Blocking second counter
-    timeToOffEntry = millis();
-    if (timeToOff-- <= 0 ) timeToOff = 0;
-  }
-  handleWiFi();     // main function. Handles all WiFi traffic
+  discoverMDNS();
 
-
+  PIRhandler();
 
 }
-//------------------------- END LOOP --------------------------------------------
+// ------------------------- END LOOP ----------------------------------
+
 
 void sendDebugMessage() {
-  // ------- Debug Message --------
   DEBUG_PRINT("Board: ");
   DEBUG_PRINT(config.boardName);
   DEBUG_PRINT(" Firmware: ");
   DEBUG_PRINT(FIRMWARE);
   DEBUG_PRINT(" Heap ");
   DEBUG_PRINT(ESP.getFreeHeap());
-
-  DEBUG_PRINT(" relayStatus: ");
-  DEBUG_PRINT(relayStatus);
-  DEBUG_PRINT(" WifiCommand: ");
-  DEBUG_PRINTLN(wifiCommand);
+  DEBUG_PRINT(" LoopStatus: ");
+  DEBUG_PRINT(loopStatus);
+  if (PIRstatus) DEBUG_PRINTLN(" PIRstatus: ON ");
+  else DEBUG_PRINTLN(" PIRstatus: OFF ");
 
 
   UDPDEBUG_START();
@@ -339,135 +330,240 @@ void sendDebugMessage() {
   UDPDEBUG_PRINTTXT(FIRMWARE);
   long h1 = ESP.getFreeHeap();
   UDPDEBUG_PRINT(" Heap ", h1);
-
-  UDPDEBUG_PRINT(" relayStatus: ", relayStatus);
-  UDPDEBUG_PRINT(" WifiCommand: ", wifiCommand);
-  UDPDEBUG_PRINT(" relayStatus: ", relayStatus);
-  UDPDEBUG_PRINT(" Delay: ", timeToOff);
+  UDPDEBUG_PRINT(" LoopStatus: ", loopStatus);
+  if (PIRstatus) UDPDEBUG_PRINTTXT(" PIRstatus: ON ");
+  else UDPDEBUG_PRINTTXT(" PIRstatus: OFF ");
   UDPDEBUG_SEND();
 }
 
-void handleStatus() {
-  switch (relayStatus) {
-    case COMMAND_ON:
 
-      // ----- Exit
-      if (wifiCommand == COMMAND_OFF || (timeToOff <= 0 && atoi(config.delayTime) != 0)) {
-        switchRelay(RELAY_OFF);
+
+void PIRhandler() {
+  PIRstatus = digitalRead(PIRpin);
+
+  switch (loopStatus) {
+    case POWER_ON:        // Lamp is on
+      LEDswitch(Green);
+
+      // exit criteria
+      if (PIRstatus == LOW) {
+        Serial.println("0");
+        loopStatus = POWER_OFF;
+        LEDswitch(None);
+        showLoopState(loopStatus);
+      }
+      else if (millis() - renewEntry > 10000) {  // every 10 sec
+        Serial.println("1");
+        loopStatus = Renew;
+        showLoopState(loopStatus);
       }
       break;
 
-    case COMMAND_OFF:
+    case Renew:       // Lamp is on, send additional message
+      switchAllSonoffs(true);
+      renewEntry = millis();
 
-      // ----- Exit
-      if (wifiCommand == COMMAND_ON) {
-        switchRelay(RELAY_ON);
-        timeToOff = atoi(config.delayTime);
+      // exit criteria
+      loopStatus = POWER_ON;
+      showLoopState(loopStatus);
+      break;
+
+    case POWER_OFF:       // Lamp is off
+
+      // exit criteria
+      if (PIRstatus == HIGH) {
+        switchAllSonoffs(true);
+        loopStatus = POWER_ON;
+        showLoopState(loopStatus);
+        debugEntry = millis();
       }
       break;
 
-    case COMMAND_STATUS:
-
-      // ----- Exit
+    default:
       break;
   }
 }
 
-bool handleWiFi() {
-  server.begin();
-  WiFiClient client = server.available();
-  if (!client) return false;
-  else {
-    DEBUG_PRINTLN("new client");
-    int timeOut = 10000;
-    while (!client.available() && timeOut-- > 0) delay(1);
-    if (timeOut <= 0) return false;
-    else {
-      // Read the first line of the request
-      String request = client.readStringUntil('\r');
-      DEBUG_PRINT("Request "); DEBUG_PRINTLN(request);
-      client.flush();
-
-      // Match the request
-      if (request.indexOf("/SWITCH=ON") != -1) {
-        timeToOff = atoi(config.delayTime);
-        wifiCommand = COMMAND_ON;
-        UDPDEBUG_START();
-        DEBUG_PRINTLN("ON request received");
-        UDPDEBUG_PRINTTXT("ON request received ");
-        UDPDEBUG_SEND();
-      }
-      if (request.indexOf("/SWITCH=OFF") != -1) {
-        wifiCommand = COMMAND_OFF;
-        UDPDEBUG_START();
-        DEBUG_PRINTLN("OFF request received");
-        UDPDEBUG_PRINTTXT("OFF request received ");
-        UDPDEBUG_SEND();
-      }
-      if (request.indexOf("/STATUS") != -1) {
-        wifiCommand = COMMAND_STATUS;
-        UDPDEBUG_START();
-        DEBUG_PRINTLN("Status request received");
-        UDPDEBUG_PRINTTXT("STATUS request received ");
-        UDPDEBUG_SEND();
-      }
-      handleStatus();  // define next status
-      // Return the response
-      client.println("HTTP/1.1 200 OK");
-      client.println("Content-Type: text/html");
-      client.println(""); //  do not forget this one
-      client.println("<!DOCTYPE HTML>");
-      client.println("<html><h2>");
-      client.print("BOARD: ");
-      client.print(config.boardName);
-      client.print(" STATUS: ");
-      if (relayStatus == RELAY_ON) {
-        client.print("On ");
-        client.print(timeToOff);
-        client.print(" sec");
-      }
-      else client.println("Off ");
-
-      client.println("<br><br>");
-      client.println("Click <a href=\"/SWITCH=ON\">here</a> turn the SWITCH on pin 12 ON<br>");
-      client.println("Click <a href=\"/SWITCH=OFF\">here</a> turn the SWITCH on pin 12 OFF<br>");
-      client.println("Click <a href=\"/STATUS\">here</a> get status<br>");
-      client.println("</h2></html>");
-      delay(1);
-      DEBUG_PRINTLN("Client disconnected");
-      DEBUG_PRINTLN("");
-      return true;
+void discoverMDNS() {
+  if (MDNS.hostname(0) == "" || (millis() - dnsRefreshEntry > 60000)) { // every minute or if no device detected
+    discoverCount = 0;
+    do {
+      discovermDNSServices();
+      // for (int i = 0; i < 5; i++) DEBUG_PRINTLN(sonoffIP[i]);
+      discoverCount++;
+    } while (MDNS.hostname(0) == "");
+    dnsRefreshEntry = millis();
+    if (discoverCount > 10) {
+      LEDswitch(RedFastBlink);
+      delay(2000);
+      ESP.restart();    // restart if no services available
     }
   }
 }
 
-void switchRelay(bool state) {
-  if (state) {
-    DEBUG_PRINTLN("Switch On ");
-    UDPDEBUG_START();
-    UDPDEBUG_PRINTTXT("Switch On ");
-    UDPDEBUG_SEND();
-    LEDswitch(Green);
-    digitalWrite(RELAYPIN, HIGH);
-    relayStatus = RELAY_ON;
-  } else {
-    DEBUG_PRINT("Switch Off ");
-    UDPDEBUG_START();
-    UDPDEBUG_PRINTTXT("Switch Off ");
-    UDPDEBUG_SEND();
-    LEDswitch(None);
-    digitalWrite(RELAYPIN, LOW);
-    relayStatus = RELAY_OFF;
+
+void showLoopState(statusDef loopStatus) {
+  DEBUG_PRINT(millis() / 1000);
+  UDPDEBUG_START();
+  UDPDEBUG_PRINT("Seconds ", (int)(millis() / 1000));
+  DEBUG_PRINT(" Discovercount: ");
+  DEBUG_PRINT(discoverCount);
+  switch (loopStatus) {
+    case POWER_OFF:
+      DEBUG_PRINT(" Status: ");
+      DEBUG_PRINTLN("OFF");
+      UDPDEBUG_PRINTTXT(" Status: ");
+      UDPDEBUG_PRINTTXT("OFF");
+      break;
+
+    case POWER_ON:
+      DEBUG_PRINT(" Status: ");
+      DEBUG_PRINTLN("ON");
+      UDPDEBUG_PRINTTXT(" Status: ");
+      UDPDEBUG_PRINTTXT("ON");
+      break;
+
+    case Renew:
+      DEBUG_PRINT(" Status: ");
+      DEBUG_PRINTLN("Renew");
+      UDPDEBUG_PRINTTXT(" Status: ");
+      UDPDEBUG_PRINTTXT("Renew");
+      break;
+
+    default:
+      break;
   }
+  UDPDEBUG_SEND();
 }
 
+
+bool switchAllSonoffs(bool command) {
+  bool ret1, ret2;
+
+  if (switchName1 != "") ret1 = switchSonoff(command, switchName1);
+  if (!ret1) {
+    DEBUG_PRINT(switchName1);
+    DEBUG_PRINTLN(" not present");
+    UDPDEBUG_START();
+    UDPDEBUG_PRINTTXT(switchName1);
+    UDPDEBUG_PRINTTXT(" not present");
+    UDPDEBUG_SEND();
+  }
+
+
+  if (switchName2 != "") ret2 = switchSonoff(command, switchName2);
+  if (!ret2) {
+    DEBUG_PRINT(switchName2);
+    DEBUG_PRINTLN(" not present");
+    UDPDEBUG_START();
+    UDPDEBUG_PRINTTXT(switchName2);
+    UDPDEBUG_PRINTTXT(" not present");
+    UDPDEBUG_SEND();
+  }
+  return ret1 & ret2;
+
+}
+
+bool switchSonoff(bool command, String device) {
+  int i = 0;
+  bool found = false;
+  String payload;
+  String switchString;
+
+  if (WiFi.status() != WL_CONNECTED) espRestart('N', "Not connected");
+
+  while ( deviceName[i].length() > 0 && i <= MAXDEVICES) {
+    yield();
+    payload = "";
+    switchString = "";
+    if (deviceName[i] == device) {
+      switchString = "http://" + sonoffIP[i].toString();
+
+      if (command == true) switchString = switchString + "/SWITCH=ON";
+      else switchString = switchString + "/SWITCH=OFF";
+      DEBUG_PRINTLN(switchString);
+      UDPDEBUG_START();
+      UDPDEBUG_PRINTTXT(debugBuffer);
+      UDPDEBUG_SEND();
+
+      // DEBUG_PRINT("Starting [HTTP] GET...\n");
+      // start connection and send HTTP header
+      http.begin(switchString);
+      int httpCode = http.GET();
+
+      DEBUG_PRINT("[HTTP] GET... code: ");
+      DEBUG_PRINTLN(httpCode);
+
+      UDPDEBUG_START();
+      UDPDEBUG_PRINT("[HTTP] GET... code: ", httpCode);
+      UDPDEBUG_SEND();
+      //httpCode will be negative on error
+      if (httpCode > 0) {
+        // HTTP header has been send and Server response header has been handled
+        if (httpCode == HTTP_CODE_OK) {
+          payload = http.getString();
+          found = true;
+        } else {
+          DEBUG_PRINT("[HTTP] GET... failed, error: ");
+          DEBUG_PRINTLN(http.errorToString(httpCode));
+          UDPDEBUG_START();
+          UDPDEBUG_PRINTTXT("[HTTP] GET... code: ");
+          UDPDEBUG_PRINTTXT(http.errorToString(httpCode));
+          UDPDEBUG_SEND();
+          LEDswitch(RedBlink);
+        }
+      } else {
+        DEBUG_PRINTLN("HTTP code not ok");
+        LEDswitch(RedBlink);
+      }
+      http.end();
+    }
+    i++;
+  }
+  return found;
+}
+
+void discovermDNSServices() {
+  int j;
+  for (j = 0; j < 5; j++) sonoffIP[j] = (0, 0, 0, 0);
+  j = 0;
+  DEBUG_PRINTLN("Sending mDNS query");
+  yield();
+  int n = MDNS.queryService(SERVICENAME, "tcp"); // Send out query for esp tcp services
+  yield();
+  DEBUG_PRINTLN("mDNS query done");
+  if (n == 0) {
+    espRestart('N', "No services found");
+  }
+  else {
+    DEBUG_PRINT(n);
+    DEBUG_PRINTLN(" service(s) found");
+    for (int i = 0; i < n; ++i) {
+      yield();
+      // Print details for each service found
+      DEBUG_PRINT(i + 1);
+      DEBUG_PRINT(": ");
+      DEBUG_PRINT(MDNS.hostname(i));
+      DEBUG_PRINT(" (");
+      DEBUG_PRINT(MDNS.IP(i));
+      deviceName[j] = MDNS.hostname(i);
+      sonoffIP[j++] = MDNS.IP(i);
+      DEBUG_PRINT(":");
+      DEBUG_PRINT(MDNS.port(i));
+      DEBUG_PRINTLN(")");
+      yield();
+    }
+  }
+  DEBUG_PRINTLN();
+}
 
 
 void readFullConfiguration() {
   readConfig();  // configuration in EEPROM
   // insert NEW CONSTANTS according switchName1 example
+  switchName1 = String(config.switchName1);
+  switchName2 = String(config.switchName2);
 }
-
 
 bool readRTCmem() {
   bool ret = true;
@@ -489,5 +585,3 @@ void printRTCmem() {
   DEBUG_PRINT("bootTimes ");
   DEBUG_PRINTLN(rtcMem.bootTimes);
 }
-
-

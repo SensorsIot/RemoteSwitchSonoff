@@ -1,8 +1,7 @@
-void initialize() {   // this function is called by IOTappstory() before return. Here, you put a safe startup configuration
+void initialize() {  // this function is called by IOTappstory() before return. Here, you put a safe startup configuration
 
-  wifiCommand = COMMAND_OFF;  // switch LED off for startup of device
+  loopStatus = POWER_OFF;  // command off for startup of device
 }
-
 
 void configESP() {
   Serial.begin(115200);
@@ -45,17 +44,14 @@ void configESP() {
   //--------------- LOOP ----------------------------------
 
   while (1) {
-    if (buttonChanged && buttonTime > 4000) espRestart('N', "Back to normal mode");  // long button press > 4sec
     yield();
     loopWiFiManager();
   }
 }
 
 
-void loopWiFiManager() {
 
-  // additional fields
-  WiFiManagerParameter p_delayTime("p_delayTime", "p_delayTime", config.delayTime, 10);
+void loopWiFiManager() {
 
   // Standard
   WiFiManagerParameter p_boardName("boardName", "boardName", config.boardName, STRUCT_CHAR_ARRAY_SIZE);
@@ -63,7 +59,12 @@ void loopWiFiManager() {
   WiFiManagerParameter p_IOTappStoryPHP1("IOTappStoryPHP1", "IOTappStoryPHP1", config.IOTappStoryPHP1, STRUCT_CHAR_ARRAY_SIZE);
   WiFiManagerParameter p_IOTappStory2("IOTappStory2", "IOTappStory2", config.IOTappStory2, STRUCT_CHAR_ARRAY_SIZE);
   WiFiManagerParameter p_IOTappStoryPHP2("IOTappStoryPHP2", "IOTappStoryPHP2", config.IOTappStoryPHP2, STRUCT_CHAR_ARRAY_SIZE);
-  WiFiManagerParameter p_udpPort("udpPort", "udpPort", config.udpPort, 10);
+  WiFiManagerParameter p_udpPort("udpPort", "udpPort", config.udpPort, 5);
+
+  //add all parameters here
+  WiFiManagerParameter p_switchName1("switchName1", "switchName1", config.switchName1, STRUCT_CHAR_ARRAY_SIZE);
+  WiFiManagerParameter p_switchName2("switchName2", "switchName2", config.switchName2, STRUCT_CHAR_ARRAY_SIZE);
+
 
   // Just a quick hint
   WiFiManagerParameter p_hint("<small>*Hint: if you want to reuse the currently active WiFi credentials, leave SSID and Password fields empty</small>");
@@ -74,7 +75,8 @@ void loopWiFiManager() {
   wifiManager.addParameter(&p_boardName);
 
   //add all parameters here
-  wifiManager.addParameter(&p_delayTime);
+  wifiManager.addParameter(&p_switchName1);
+  wifiManager.addParameter(&p_switchName2);
 
   // Standard
   wifiManager.addParameter(&p_IOTappStory1);
@@ -102,8 +104,6 @@ void loopWiFiManager() {
   // Getting posted form values and overriding local variables parameters
   // Config file is written
 
-  //add all parameters here
-
 
   // Standard
   strcpy(config.boardName, p_boardName.getValue());
@@ -113,8 +113,9 @@ void loopWiFiManager() {
   strcpy(config.IOTappStoryPHP2, p_IOTappStoryPHP2.getValue());
   strcpy(config.udpPort, p_udpPort.getValue());
 
-  //additional fields
-  strcpy(config.delayTime, p_delayTime.getValue());
+  //add all parameters here
+  strcpy(config.switchName2, p_switchName2.getValue());
+  strcpy(config.switchName1, p_switchName1.getValue());
 
   writeConfig();
   readFullConfiguration();  // read back to fill all variables
@@ -122,6 +123,4 @@ void loopWiFiManager() {
   LEDswitch(None); // Turn LED off as we are not in configuration mode.
 
   espRestart('N', "Configuration finished"); //Normal Operation
-
 }
-
