@@ -71,11 +71,11 @@ extern "C" {
 #ifdef ARDUINO_ESP8266_ESP01           // Generic ESP's 
 #define MODEBUTTON 0
 #define LEDgreen 13
-// #define LEDred 12
+ #define LEDred 12
 #else
 #define MODEBUTTON D3
 #define LEDgreen D7
-// #define LEDred D6
+ #define LEDred D6
 #endif
 
 // --- Sketch Specific -----
@@ -307,7 +307,7 @@ void sendDebugMessage() {
   if (PIRstatus) sysMessage += " PIRstatus: ON ";
   else sysMessage += " PIRstatus: OFF ";
 
-  // sendSysLogMessage(6, 1, config.boardName, FIRMWARE, 10, counter++, sysMessage);
+  sendSysLogMessage(6, 1, config.boardName, FIRMWARE, 10, counter++, sysMessage);
 }
 
 
@@ -357,6 +357,30 @@ void PIRhandler() {
   }
 }
 
+void discovermDNSServices() {
+  int j;
+  for (j = 0; j < 5; j++) sonoffIP[j] = (0, 0, 0, 0);
+  j = 0;
+  DEBUG_PRINTLN("Sending mDNS query");
+  yield();
+  int n = MDNS.queryService(SERVICENAME, "tcp"); // Send out query for esp tcp services
+  yield();
+  DEBUG_PRINTLN("mDNS query done");
+  if (n == 0) {
+    espRestart('N', "No services found");
+  }
+  else {
+    String message1 = String(n) + " service(s) found ";
+    for (int i = 0; i < n; ++i) {
+      yield();
+      deviceName[j] = MDNS.hostname(i);
+      sonoffIP[j++] = MDNS.IP(i);
+      sysMessage = message1 + " Nr: " + String(i) + ": " + MDNS.hostname(i) + " (" + MDNS.IP(i).toString() + +": " + MDNS.port(i) + ")";
+      sendSysLogMessage(7, 1, config.boardName, FIRMWARE, 10, counter++, sysMessage);
+    }
+  }
+}
+
 void discoverMDNS() {
   if (MDNS.hostname(0) == "" || (millis() - dnsRefreshEntry > 60000)) { // every minute or if no device detected
     discoverCount = 0;
@@ -402,11 +426,13 @@ bool switchSonoff(bool command, int device) {
   payload = "";
   switchString = "";
   switchString = "http://" + sonoffIP[device].toString();
+  Serial.print("device ");
+  Serial.println(device);
 
   if (command == true) switchString = switchString + "/SWITCH=ON";
   else switchString = switchString + "/SWITCH=OFF";
 
-  sendSysLogMessage(7, 1, config.boardName, FIRMWARE, 10, counter++, deviceName[device] + " " + switchString);
+  sendSysLogMessage(7, 1, config.boardName, FIRMWARE, 10, counter++, device + " " + deviceName[device] + " " + switchString);
 
   // DEBUG_PRINT("Starting [HTTP] GET...\n");
   // start connection and send HTTP header
@@ -429,30 +455,6 @@ bool switchSonoff(bool command, int device) {
   }
   http.end();
   return found;
-}
-
-void discovermDNSServices() {
-  int j;
-  for (j = 0; j < 5; j++) sonoffIP[j] = (0, 0, 0, 0);
-  j = 0;
-  DEBUG_PRINTLN("Sending mDNS query");
-  yield();
-  int n = MDNS.queryService(SERVICENAME, "tcp"); // Send out query for esp tcp services
-  yield();
-  DEBUG_PRINTLN("mDNS query done");
-  if (n == 0) {
-    espRestart('N', "No services found");
-  }
-  else {
-    String message1 = String(n) + " service(s) found ";
-    for (int i = 0; i < n; ++i) {
-      yield();
-      deviceName[j] = MDNS.hostname(i);
-      sonoffIP[j++] = MDNS.IP(i);
-      sysMessage = message1 + " Nr: " + String(i) + ": " + MDNS.hostname(i) + " (" + MDNS.IP(i).toString() + +": " + MDNS.port(i) + ")";
-      sendSysLogMessage(7, 1, config.boardName, FIRMWARE, 10, counter++, sysMessage);
-    }
-  }
 }
 
 

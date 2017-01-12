@@ -179,7 +179,6 @@ bool readRTCmem(void);
 void printRTCmem(void);
 void initialize(void);
 void switchRelay(bool);
-bool handleWiFi(void);
 
 
 //---------- OTHER .H FILES ----------
@@ -252,13 +251,7 @@ void setup() {
   // add a DNS service
   MDNS.addService(SERVICENAME, "tcp", 8080);
 
-  server.on ( "/", handleRoot );
-
-  server.onNotFound ( handleNotFound );
-  server.begin();
-  Serial.println ( "HTTP server started" );
-
-  webServerStart();
+   webServerStart();
 
 
   // ----------- END SPECIFIC SETUP CODE ----------------------------
@@ -294,10 +287,37 @@ void loop() {
     if (timeToOff-- <= 0 ) timeToOff = 0;
   }
   server.handleClient();   // Wait for a client to connect and when they do process their requests
+  handleStatus();  // define next status
 
 }
 //------------------------- END LOOP --------------------------------------------
 
+
+void handleStatus() {
+
+  if (wifiCommand == COMMAND_ON && atoi(config.delayTime) != 0 ) timeToOff = atoi(config.delayTime);
+
+  switch (relayStatus) {
+
+    case RELAY_OFF:
+      if (relayStatus != RELAY_OFF) switchRelay(LOW);
+
+      // exit
+      if (wifiCommand == COMMAND_ON) switchRelay(HIGH);
+      break;
+
+    case RELAY_ON:
+      if (relayStatus != RELAY_ON) switchRelay(HIGH);
+
+      // exit
+      if (wifiCommand == COMMAND_OFF || (atoi(config.delayTime) != 0 &&  timeToOff <= 0)) {
+        timeToOff = 0;
+        switchRelay(LOW);
+      }
+      break;
+  }
+  wifiCommand = NONE;
+}
 
 void webServerStart() {
   server.on ( "/", handleRoot );
@@ -397,33 +417,6 @@ void sendDebugMessage() {
 
   sendSysLogMessage(6, 1, config.boardName, FIRMWARE, 10, counter++, sysMessage);
 }
-
-void handleStatus() {
-
-  if (wifiCommand == COMMAND_ON && atoi(config.delayTime) != 0 ) timeToOff = atoi(config.delayTime);
-
-  switch (relayStatus) {
-
-    case RELAY_OFF:
-      if (relayStatus != RELAY_OFF) switchRelay(LOW);
-
-      // exit
-      if (wifiCommand == COMMAND_ON) switchRelay(HIGH);
-      break;
-
-    case RELAY_ON:
-      if (relayStatus != RELAY_ON) switchRelay(HIGH);
-
-      // exit
-      if (wifiCommand == COMMAND_OFF || (atoi(config.delayTime) != 0 &&  timeToOff <= 0)) {
-        timeToOff = 0;
-        switchRelay(LOW);
-      }
-      break;
-  }
-  wifiCommand = NONE;
-}
-
 
 
 void switchRelay(bool state) {
